@@ -388,6 +388,11 @@ void __xe_devcoredump(struct xe_gt *gt, struct xe_exec_queue *q,
 
 	mutex_lock(&coredump->lock);
 
+	if (coredump->disabled) {
+		mutex_unlock(&coredump->lock);
+		return;
+	}
+
 	if (coredump->captured) {
 		drm_dbg(&xe->drm, "Multiple hangs are occurring, but only the first snapshot was taken\n");
 		mutex_unlock(&coredump->lock);
@@ -412,6 +417,22 @@ void __xe_devcoredump(struct xe_gt *gt, struct xe_exec_queue *q,
 static void xe_driver_devcoredump_fini(void *arg)
 {
 	struct drm_device *drm = arg;
+	struct xe_devcoredump *coredump = &to_xe_device(drm)->devcoredump;
+	bool captured;
+
+	/*
+	 * The devcd entry is registered from snapshot.work and keeps a pointer
+	 * to @coredump, which is freed with the xe_device. Stop new captures,
+	 * and wait for a queued snapshot to register its devcd entry, so that
+	 * dev_coredump_put() below finds and drops it.
+	 */
+	mutex_lock(&coredump->lock);
+	coredump->disabled = true;
+	captured = coredump->captured;
+	mutex_unlock(&coredump->lock);
+
+	if (captured)
+		flush_work(&coredump->snapshot.work);
 
 	dev_coredump_put(drm->dev);
 }
